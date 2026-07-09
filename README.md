@@ -1,3 +1,6 @@
+<p align="center">
+  <img src="./assets/banner.png" alt="TravelMind AI Banner" width="100%">
+</p>
 <div align="center">
 
 # 🌍 TravelMind AI
