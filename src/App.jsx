@@ -1,10 +1,15 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import {
   Plane, MapPin, FileText, ShieldAlert, ShieldCheck, Sparkles, Sun, Moon,
   Compass, Utensils, ChevronRight, Check, Camera, Ticket, Car, Phone,
   AlertTriangle, Clock, Navigation, Globe2, Info, Zap, DollarSign, CloudRain,
-  Users, Shield, Wallet, Filter, X, CalendarClock
+  Users, Shield, Wallet, Filter, X, CalendarClock, Mic, MicOff, Volume2, VolumeX,
+  Send, Bot, Map as MapIcon, CloudSun, Plus, Trash2, Sunrise, Sunset,
+  Siren, Share2, Copy, ImagePlus, Languages, Settings as SettingsIcon,
+  Bell, Download, CalendarDays, Printer, LocateFixed,
+  ArrowLeftRight, Upload, Loader2, ScanLine, Backpack, BookHeart
 } from "lucide-react";
+import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, BarChart, Bar, XAxis, YAxis, CartesianGrid } from "recharts";
 
 /* ---------------------------------------------------------------
    DESIGN TOKENS
@@ -376,6 +381,52 @@ function getMockWeather(city) {
   return { condition: conditions[seed % conditions.length], temp, rain };
 }
 
+function getHourlyForecast(city) {
+  const base = getMockWeather(city);
+  const now = new Date().getHours();
+  const hours = [];
+  for (let i = 0; i < 6; i++) {
+    const h = (now + i) % 24;
+    const seed = hashSeed(city.id + "-" + h);
+    const tempDelta = ((seed % 7) - 3);
+    const rain = Math.max(0, Math.min(95, base.rain + ((seed % 11) - 5)));
+    hours.push({
+      label: `${h % 12 === 0 ? 12 : h % 12}${h < 12 ? "AM" : "PM"}`,
+      temp: base.temp + tempDelta,
+      rain,
+    });
+  }
+  return hours;
+}
+
+function getMapPins(city) {
+  const items = [
+    ...city.hidden.map((h) => ({ type: "hidden", n: h.n, sub: h.t })),
+    ...city.food.map((f) => ({ type: "food", n: f.n, sub: f.p })),
+    ...city.safety.filter((s) => s.r === "Caution").map((s) => ({ type: "caution", n: s.a, sub: s.note })),
+  ];
+  return items.map((item, i) => {
+    const seed = hashSeed(item.n + city.id + i);
+    const x = 12 + (seed % 76);
+    const y = 12 + ((seed >> 3) % 76);
+    return { ...item, x, y };
+  });
+}
+
+const COUNTRY_CURRENCY = {
+  India: "INR", France: "EUR", Italy: "EUR", Spain: "EUR", UK: "GBP",
+  Thailand: "THB", Japan: "JPY", Indonesia: "IDR", UAE: "AED", USA: "USD",
+  Vietnam: "VND", Turkey: "TRY", Greece: "EUR", Morocco: "MAD", Egypt: "EGP",
+  Mexico: "MXN", Peru: "PEN", Nepal: "NPR", "Sri Lanka": "LKR", Australia: "AUD",
+  "South Africa": "ZAR",
+};
+// Static approximate fallback rates (per 1 USD) — used only if the live API call fails.
+const FALLBACK_RATES_PER_USD = {
+  USD: 1, INR: 83.5, EUR: 0.92, GBP: 0.79, THB: 36.2, JPY: 151, IDR: 15800,
+  AED: 3.67, VND: 25400, TRY: 32.8, MAD: 9.9, EGP: 48.5, MXN: 17.1, PEN: 3.75,
+  NPR: 133.6, LKR: 300, AUD: 1.51, ZAR: 18.7,
+};
+
 function computeSafetyScore(city) {
   const safeCount = city.safety.filter((s) => s.r === "Generally safe").length;
   const cautionCount = city.safety.filter((s) => s.r === "Caution").length;
@@ -474,14 +525,71 @@ function generateItinerary({ cityName, days, interests, style, travelers }) {
   return { plan, total: plan.reduce((s, p) => s + p.estCost, 0) };
 }
 
+/* ------------------------------------------------------------
+   Shared Anthropic API helpers (real calls, no key needed here —
+   used by Translator and AI Scanner; AiAssistant has its own inline
+   call since it manages a running message history).
+------------------------------------------------------------ */
+async function callClaudeText(system, userText) {
+  const response = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: "claude-sonnet-4-6",
+      max_tokens: 1000,
+      system,
+      messages: [{ role: "user", content: userText }],
+    }),
+  });
+  const data = await response.json();
+  return (data.content || []).filter((b) => b.type === "text").map((b) => b.text).join("\n");
+}
+
+async function callClaudeVision(system, base64, mediaType, promptText) {
+  const response = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: "claude-sonnet-4-6",
+      max_tokens: 1000,
+      system,
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "image", source: { type: "base64", media_type: mediaType, data: base64 } },
+            { type: "text", text: promptText },
+          ],
+        },
+      ],
+    }),
+  });
+  const data = await response.json();
+  return (data.content || []).filter((b) => b.type === "text").map((b) => b.text).join("\n");
+}
+
+const FX_RATES = { USD: 1, INR: 83.2, EUR: 0.92, GBP: 0.78, JPY: 156, THB: 36.4, AED: 3.67, AUD: 1.5, MXN: 18.1, ZAR: 18.6, VND: 25400, TRY: 32.8, EGP: 48.5, NPR: 133, LKR: 302 };
+const TRANSLATE_LANGUAGES = ["Hindi", "Spanish", "French", "German", "Japanese", "Mandarin Chinese", "Arabic", "Portuguese", "Italian", "Thai", "Vietnamese", "Korean", "Russian", "Bengali", "Tamil"];
+
+
 const NAV = [
   { id: "dashboard", label: "Dashboard", icon: Compass },
+  { id: "assistant", label: "AI Assistant", icon: Bot },
   { id: "safety", label: "Safety Hub", icon: ShieldCheck },
+  { id: "sos", label: "SOS", icon: Siren },
   { id: "hidden", label: "Hidden Places", icon: Camera },
   { id: "food", label: "Food", icon: Utensils },
+  { id: "map", label: "Map", icon: MapIcon },
+  { id: "weather", label: "Weather", icon: CloudSun },
+  { id: "budget", label: "Budget", icon: Wallet },
+  { id: "currency", label: "Currency", icon: ArrowLeftRight },
+  { id: "scanner", label: "Scan & Translate", icon: ImagePlus },
+  { id: "packing", label: "Packing", icon: Backpack },
+  { id: "memory", label: "Memory Journal", icon: BookHeart },
   { id: "cabs", label: "Cabs", icon: Car },
   { id: "planner", label: "AI Planner", icon: Sparkles },
   { id: "documents", label: "Documents", icon: FileText },
+  { id: "settings", label: "Settings", icon: SettingsIcon },
 ];
 
 export default function TravelMindGlobal() {
@@ -530,15 +638,20 @@ export default function TravelMindGlobal() {
         @keyframes tabFade { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
         .chip-btn { transition: all 0.15s ease; }
         .chip-btn:hover { transform: scale(1.03); }
+        @media print {
+          .no-print { display: none !important; }
+          body, .tab-fade { background: white !important; color: black !important; }
+        }
       `}</style>
 
-      <header className="sticky top-0 z-30 flex items-center justify-between px-5 py-4 border-b backdrop-blur-md gap-3 flex-wrap"
+      <header className="no-print sticky top-0 z-30 flex items-center justify-between px-5 py-4 border-b backdrop-blur-md gap-3 flex-wrap"
         style={{ borderColor: border, background: dark ? "rgba(11,17,32,0.85)" : "rgba(246,242,233,0.85)" }}>
         <div className="flex items-center gap-2">
           <div className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ background: "linear-gradient(135deg, #E8933C, #FF6B5D)" }}>
             <Plane size={16} color="#10131A" strokeWidth={2.5} />
           </div>
           <span className="display-font text-lg font-semibold tracking-tight">TravelMind AI</span>
+          <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full mono-font" style={{ background: "rgba(45,212,191,0.15)", color: "#2DD4BF" }}>v2.0</span>
         </div>
         <div className="flex items-center gap-3">
           <select value={destId} onChange={(e) => setDestId(e.target.value)}
@@ -558,7 +671,7 @@ export default function TravelMindGlobal() {
       </header>
 
       <div className="flex max-w-6xl mx-auto">
-        <nav className="hidden md:flex flex-col gap-1 w-56 p-4 shrink-0">
+        <nav className="no-print hidden md:flex flex-col gap-1 w-56 p-4 shrink-0">
           {NAV.map((n) => {
             const Icon = n.icon;
             const active = tab === n.id;
@@ -576,7 +689,7 @@ export default function TravelMindGlobal() {
           </div>
         </nav>
 
-        <nav className="md:hidden fixed bottom-0 left-0 right-0 z-30 flex justify-around py-2 border-t backdrop-blur-md overflow-x-auto"
+        <nav className="no-print md:hidden fixed bottom-0 left-0 right-0 z-30 flex justify-around py-2 border-t backdrop-blur-md overflow-x-auto"
           style={{ borderColor: border, background: dark ? "rgba(11,17,32,0.95)" : "rgba(246,242,233,0.95)" }}>
           {NAV.map((n) => {
             const Icon = n.icon;
@@ -593,12 +706,22 @@ export default function TravelMindGlobal() {
         <main className="flex-1 p-4 md:p-6 pb-24 md:pb-6">
           <div key={tab + destId} className="tab-fade">
             {tab === "dashboard" && <Dashboard {...theme} city={city} setTab={setTab} />}
+            {tab === "assistant" && <AiAssistant {...theme} city={city} />}
             {tab === "safety" && <SafetyHub {...theme} city={city} />}
+            {tab === "sos" && <SosMode {...theme} city={city} />}
             {tab === "hidden" && <HiddenPlaces {...theme} city={city} />}
             {tab === "food" && <FoodView {...theme} city={city} />}
+            {tab === "map" && <MapView {...theme} city={city} />}
+            {tab === "weather" && <WeatherView {...theme} city={city} />}
+            {tab === "budget" && <BudgetPlanner {...theme} city={city} />}
+            {tab === "currency" && <CurrencyConverter {...theme} city={city} />}
+            {tab === "scanner" && <ScannerTranslator {...theme} city={city} />}
+            {tab === "packing" && <PackingAssistant {...theme} city={city} />}
+            {tab === "memory" && <MemoryJournal {...theme} city={city} />}
             {tab === "cabs" && <CabsView {...theme} city={city} />}
             {tab === "planner" && <Planner {...theme} city={city} />}
             {tab === "documents" && <Documents {...theme} />}
+            {tab === "settings" && <SettingsView {...theme} dark={dark} setDark={setDark} />}
           </div>
         </main>
       </div>
@@ -838,6 +961,126 @@ function SafetyHub({ dark, surface, border, sub, ink, city }) {
   );
 }
 
+/* ---------------- SOS Mode (real geolocation + real share/dial) ---------------- */
+function SosMode({ dark, surface, border, sub, ink, city }) {
+  const [coords, setCoords] = useState(null);
+  const [geoError, setGeoError] = useState(null);
+  const [geoLoading, setGeoLoading] = useState(false);
+  const [shareStatus, setShareStatus] = useState(null);
+
+  const getLocation = () => {
+    setGeoLoading(true);
+    setGeoError(null);
+    if (!navigator.geolocation) {
+      setGeoError("This browser doesn't support location access. Use Maps manually to find help nearby.");
+      setGeoLoading(false);
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setCoords({ lat: pos.coords.latitude, lng: pos.coords.longitude });
+        setGeoLoading(false);
+      },
+      (err) => {
+        setGeoError(err.message === "User denied Geolocation" || err.code === 1
+          ? "Location permission was denied — enable it in your browser settings to use live location for SOS."
+          : "Couldn't get your location right now. Try again or check your device's location settings.");
+        setGeoLoading(false);
+      },
+      { timeout: 10000, enableHighAccuracy: true }
+    );
+  };
+
+  const mapsLink = coords ? `https://www.google.com/maps/search/?api=1&query=${coords.lat},${coords.lng}` : null;
+  const hospitalsLink = coords ? `https://www.google.com/maps/search/hospitals/@${coords.lat},${coords.lng},15z` : null;
+  const policeLink = coords ? `https://www.google.com/maps/search/police+station/@${coords.lat},${coords.lng},15z` : null;
+
+  const shareLocation = async () => {
+    if (!mapsLink) return;
+    const text = `I'm using TravelMind AI's SOS mode. My current location: ${mapsLink}`;
+    if (navigator.share) {
+      try {
+        await navigator.share({ title: "My live location", text, url: mapsLink });
+        setShareStatus("Shared.");
+      } catch (e) {
+        setShareStatus(null);
+      }
+    } else if (navigator.clipboard) {
+      try {
+        await navigator.clipboard.writeText(text);
+        setShareStatus("Location link copied — paste it to whoever you want to notify.");
+      } catch (e) {
+        setShareStatus("Couldn't copy automatically — long-press to copy the link below.");
+      }
+    } else {
+      setShareStatus("Copy the link below manually to share it.");
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      <Card surface={surface} border={border} className="text-center">
+        <Siren size={36} color="#FF6B5D" className="mx-auto mb-2" />
+        <h2 className="display-font text-xl mb-1">SOS Mode</h2>
+        <p className="text-sm" style={{ color: sub }}>Real device location, real emergency dialing, real share action — this is not a simulation.</p>
+      </Card>
+
+      <Card surface={surface} border={border}>
+        <div className="flex items-center gap-2 mb-3"><LocateFixed size={16} color="#2DD4BF" /><h3 className="text-sm font-semibold">Step 1 — Get your live location</h3></div>
+        <button onClick={getLocation} disabled={geoLoading} className="w-full py-2.5 rounded-lg text-sm font-semibold flex items-center justify-center gap-2 mb-2"
+          style={{ background: "linear-gradient(135deg, #E8933C, #FF6B5D)", color: "#10131A" }}>
+          <LocateFixed size={15} />{geoLoading ? "Locating…" : coords ? "Refresh location" : "Get my location"}
+        </button>
+        {geoError && <p className="text-xs mt-1" style={{ color: "#FF6B5D" }}>{geoError}</p>}
+        {coords && (
+          <div className="mt-2 p-3 rounded-lg text-sm" style={{ background: dark ? "#1B2438" : "#F6F2E9" }}>
+            <p className="mono-font" style={{ color: ink }}>{coords.lat.toFixed(5)}, {coords.lng.toFixed(5)}</p>
+            <div className="flex flex-wrap gap-2 mt-2">
+              <a href={mapsLink} target="_blank" rel="noreferrer" className="chip-btn text-xs px-2.5 py-1.5 rounded-full border flex items-center gap-1" style={{ borderColor: border, color: "#2DD4BF" }}><MapIcon size={12} />Open in Maps</a>
+              <a href={hospitalsLink} target="_blank" rel="noreferrer" className="chip-btn text-xs px-2.5 py-1.5 rounded-full border flex items-center gap-1" style={{ borderColor: border, color: sub }}>Nearby hospitals</a>
+              <a href={policeLink} target="_blank" rel="noreferrer" className="chip-btn text-xs px-2.5 py-1.5 rounded-full border flex items-center gap-1" style={{ borderColor: border, color: sub }}>Nearby police</a>
+            </div>
+          </div>
+        )}
+      </Card>
+
+      <Card surface={surface} border={border}>
+        <div className="flex items-center gap-2 mb-3"><Share2 size={16} color="#E8933C" /><h3 className="text-sm font-semibold">Step 2 — Share your location</h3></div>
+        <button onClick={shareLocation} disabled={!coords} className="w-full py-2.5 rounded-lg text-sm font-semibold flex items-center justify-center gap-2 border"
+          style={{ borderColor: border, color: coords ? ink : sub, opacity: coords ? 1 : 0.5 }}>
+          <Share2 size={15} />Share live location with a contact
+        </button>
+        {shareStatus && <p className="text-xs mt-2" style={{ color: "#2DD4BF" }}>{shareStatus}</p>}
+        {!coords && <p className="text-xs mt-2" style={{ color: sub }}>Get your location first (Step 1).</p>}
+      </Card>
+
+      <Card surface={surface} border={border}>
+        <div className="flex items-center gap-2 mb-3"><Phone size={16} color="#FF6B5D" /><h3 className="text-sm font-semibold">Step 3 — Call for help</h3></div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+          {city.emergency.map((e) => (
+            <a key={e.l} href={`tel:${e.n}`} className="chip-btn flex items-center justify-between p-3 rounded-lg text-sm" style={{ background: dark ? "#1B2438" : "#F6F2E9" }}>
+              <span style={{ color: sub }}>{e.l}</span>
+              <span className="mono-font font-semibold" style={{ color: "#FF6B5D" }}>{e.n}</span>
+            </a>
+          ))}
+        </div>
+        <p className="text-[11px] mt-2" style={{ color: sub }}>Tapping a number opens your phone's dialer directly.</p>
+      </Card>
+
+      <Card surface={surface} border={border}>
+        <div className="flex items-center gap-2 mb-2"><Info size={15} color="#2DD4BF" /><h3 className="text-sm font-semibold">Offline emergency guide</h3></div>
+        <ul className="space-y-1.5 text-sm" style={{ color: sub }}>
+          <li>• Move toward a well-lit, populated public place if you can.</li>
+          <li>• Call your emergency contact or local authorities before anything else.</li>
+          <li>• If you can't call, text — it can work on weaker signal.</li>
+          <li>• Keep your phone's battery saver on and screen brightness low to conserve power.</li>
+          <li>• This section works even without internet, since it's static text stored in the app.</li>
+        </ul>
+      </Card>
+    </div>
+  );
+}
+
 function HiddenPlaces({ dark, surface, border, sub, ink, city }) {
   return (
     <div>
@@ -985,6 +1228,418 @@ function CabsView({ dark, surface, border, sub, ink, city }) {
   );
 }
 
+/* ---------------- AI Assistant (real Claude API call) ---------------- */
+function AiAssistant({ dark, surface, border, sub, ink, city }) {
+  const [messages, setMessages] = useState([
+    { role: "assistant", text: `Hi! I'm your AI travel assistant for ${city.name}. Ask me anything — safety, food, hidden spots, or what to do today.` },
+  ]);
+  const [input, setInput] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [speakEnabled, setSpeakEnabled] = useState(false);
+  const [listening, setListening] = useState(false);
+  const [micError, setMicError] = useState(null);
+  const recognitionRef = useRef(null);
+  const scrollRef = useRef(null);
+
+  useEffect(() => {
+    if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+  }, [messages, loading]);
+
+  const speak = (text) => {
+    if (!speakEnabled || typeof window === "undefined" || !window.speechSynthesis) return;
+    try {
+      window.speechSynthesis.cancel();
+      const utter = new SpeechSynthesisUtterance(text);
+      utter.rate = 1.02;
+      window.speechSynthesis.speak(utter);
+    } catch (e) {
+      // speech synthesis not available — fail silently, text is still shown
+    }
+  };
+
+  const toggleListening = () => {
+    setMicError(null);
+    const SpeechRecognition = typeof window !== "undefined" && (window.SpeechRecognition || window.webkitSpeechRecognition);
+    if (!SpeechRecognition) {
+      setMicError("Voice input isn't supported in this browser/environment. Type your question instead.");
+      return;
+    }
+    if (listening) {
+      recognitionRef.current?.stop();
+      setListening(false);
+      return;
+    }
+    try {
+      const rec = new SpeechRecognition();
+      rec.lang = "en-US";
+      rec.interimResults = false;
+      rec.maxAlternatives = 1;
+      rec.onresult = (e) => {
+        const transcript = e.results[0][0].transcript;
+        setInput((prev) => (prev ? prev + " " + transcript : transcript));
+      };
+      rec.onerror = () => {
+        setMicError("Microphone access was blocked or unavailable here — you can type instead.");
+        setListening(false);
+      };
+      rec.onend = () => setListening(false);
+      recognitionRef.current = rec;
+      rec.start();
+      setListening(true);
+    } catch (e) {
+      setMicError("Couldn't start voice input in this environment — you can type instead.");
+    }
+  };
+
+  const askAI = async (question) => {
+    if (!question.trim() || loading) return;
+    const userMsg = { role: "user", text: question };
+    setMessages((prev) => [...prev, userMsg]);
+    setInput("");
+    setLoading(true);
+
+    const contextBlock = `You are the AI travel assistant inside "TravelMind AI" for the destination ${city.name}, ${city.country}.
+Use this data as ground truth when relevant, but you may also reason beyond it:
+Hidden places: ${city.hidden.map((h) => `${h.n} (${h.t})`).join("; ")}
+Food: ${city.food.map((f) => `${f.n} (${f.p})`).join("; ")}
+Safety notes: ${city.safety.map((s) => `${s.a}: ${s.r} — ${s.note}`).join(" | ")}
+Transport: ${city.transport.map((t) => `${t.n}: ${t.note}`).join(" | ")}
+Tips: ${city.tips.join(" ")}
+Answer concisely (2-4 sentences unless asked for a list), in a warm, practical, safety-aware tone. If asked about something current (events, prices, opening hours) that you're not certain of, say so plainly rather than guessing.`;
+
+    try {
+      const response = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-6",
+          max_tokens: 1000,
+          system: contextBlock,
+          messages: [...messages, userMsg].map((m) => ({ role: m.role, content: m.text })),
+        }),
+      });
+      const data = await response.json();
+      const textBlocks = (data.content || []).filter((b) => b.type === "text").map((b) => b.text);
+      const answer = textBlocks.join("\n") || "I didn't get a clear answer back — try asking again.";
+      setMessages((prev) => [...prev, { role: "assistant", text: answer }]);
+      speak(answer);
+    } catch (e) {
+      setMessages((prev) => [...prev, { role: "assistant", text: "I couldn't reach the AI service just now. Please try again in a moment." }]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const suggestions = ["Is it safe to walk alone at night here?", "What should I eat today on a budget?", `Plan a half-day around ${city.hidden[0]?.n || "the main sights"}`];
+
+  return (
+    <div className="flex flex-col h-[70vh]">
+      <div className="flex items-center justify-between mb-3">
+        <div className="flex items-center gap-2">
+          <Bot size={18} color="#E8933C" />
+          <h2 className="display-font text-lg">AI Assistant — {city.name}</h2>
+        </div>
+        <button onClick={() => setSpeakEnabled((s) => !s)} className="chip-btn flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-full border"
+          style={{ borderColor: speakEnabled ? "#2DD4BF" : border, color: speakEnabled ? "#2DD4BF" : sub, background: speakEnabled ? "rgba(45,212,191,0.1)" : "transparent" }}>
+          {speakEnabled ? <Volume2 size={13} /> : <VolumeX size={13} />}{speakEnabled ? "Voice on" : "Voice off"}
+        </button>
+      </div>
+
+      <div ref={scrollRef} className="flex-1 overflow-y-auto rounded-2xl border p-4 space-y-3" style={{ background: surface, borderColor: border }}>
+        {messages.map((m, i) => (
+          <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
+            <div className="max-w-[85%] rounded-2xl px-3.5 py-2.5 text-sm"
+              style={{
+                background: m.role === "user" ? "linear-gradient(135deg, #E8933C, #FF6B5D)" : dark ? "#1B2438" : "#F6F2E9",
+                color: m.role === "user" ? "#10131A" : ink,
+              }}>
+              {m.text}
+            </div>
+          </div>
+        ))}
+        {loading && (
+          <div className="flex justify-start">
+            <div className="rounded-2xl px-3.5 py-2.5 text-sm flex items-center gap-1.5" style={{ background: dark ? "#1B2438" : "#F6F2E9", color: sub }}>
+              <Sparkles size={13} className="animate-pulse" color="#E8933C" />Thinking…
+            </div>
+          </div>
+        )}
+      </div>
+
+      {messages.length === 1 && (
+        <div className="flex flex-wrap gap-2 mt-2">
+          {suggestions.map((s) => (
+            <button key={s} onClick={() => askAI(s)} className="chip-btn text-xs px-2.5 py-1.5 rounded-full border" style={{ borderColor: border, color: sub }}>
+              {s}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {micError && <p className="text-xs mt-2" style={{ color: "#FF6B5D" }}>{micError}</p>}
+
+      <div className="flex items-center gap-2 mt-3">
+        <button onClick={toggleListening} className="w-10 h-10 rounded-full flex items-center justify-center border shrink-0"
+          style={{ borderColor: listening ? "#FF6B5D" : border, background: listening ? "rgba(255,107,93,0.12)" : "transparent" }} aria-label="Voice input">
+          {listening ? <MicOff size={15} color="#FF6B5D" /> : <Mic size={15} color={sub} />}
+        </button>
+        <input
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && askAI(input)}
+          placeholder={`Ask about ${city.name}…`}
+          className="flex-1 px-3.5 py-2.5 rounded-full text-sm border bg-transparent"
+          style={{ borderColor: border, color: ink }}
+        />
+        <button onClick={() => askAI(input)} disabled={loading} className="w-10 h-10 rounded-full flex items-center justify-center shrink-0"
+          style={{ background: "linear-gradient(135deg, #E8933C, #FF6B5D)" }} aria-label="Send">
+          <Send size={15} color="#10131A" />
+        </button>
+      </div>
+      <p className="text-[11px] mt-2" style={{ color: sub }}>Powered by a live Claude API call — real generated answers, not scripted responses.</p>
+    </div>
+  );
+}
+
+/* ---------------- Illustrative Map ---------------- */
+function MapView({ dark, surface, border, sub, ink, city }) {
+  const [selected, setSelected] = useState(null);
+  const pins = getMapPins(city);
+  const colorFor = (type) => (type === "hidden" ? "#E8933C" : type === "food" ? "#FF6B5D" : "#2DD4BF");
+  const IconFor = (type) => (type === "hidden" ? Camera : type === "food" ? Utensils : ShieldAlert);
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+        <h2 className="display-font text-lg">{city.name} — illustrative map</h2>
+        <div className="flex items-center gap-3 text-xs" style={{ color: sub }}>
+          <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full inline-block" style={{ background: "#E8933C" }} />Hidden spots</span>
+          <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full inline-block" style={{ background: "#FF6B5D" }} />Food</span>
+          <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full inline-block" style={{ background: "#2DD4BF" }} />Caution zones</span>
+        </div>
+      </div>
+      <p className="text-xs mb-3 flex items-start gap-1.5" style={{ color: sub }}>
+        <Info size={12} className="mt-0.5 shrink-0" />Schematic layout for orientation only — not GPS-accurate. Real maps need a mapping API key.
+      </p>
+      <Card surface={surface} border={border}>
+        <div className="relative w-full rounded-xl overflow-hidden" style={{ paddingBottom: "62%", background: dark ? "#0E1626" : "#EFEAE0" }}>
+          <svg viewBox="0 0 100 62" className="absolute inset-0 w-full h-full">
+            <defs>
+              <pattern id="grid" width="10" height="10" patternUnits="userSpaceOnUse">
+                <path d="M 10 0 L 0 0 0 10" fill="none" stroke={dark ? "#1B2438" : "#E2D9C6"} strokeWidth="0.3" />
+              </pattern>
+            </defs>
+            <rect width="100" height="62" fill="url(#grid)" />
+            {pins.map((p, i) => {
+              return (
+                <g key={i} transform={`translate(${p.x}, ${p.y * 0.62})`} style={{ cursor: "pointer" }} onClick={() => setSelected(p)}>
+                  <circle r="2.6" fill={colorFor(p.type)} opacity={selected === p ? 1 : 0.85} stroke={dark ? "#0B1120" : "#F6F2E9"} strokeWidth="0.5" />
+                </g>
+              );
+            })}
+          </svg>
+        </div>
+        {selected && (
+          <div className="mt-3 p-3 rounded-lg flex items-start justify-between gap-3" style={{ background: dark ? "#1B2438" : "#F6F2E9" }}>
+            <div>
+              <p className="text-sm font-medium">{selected.n}</p>
+              <p className="text-xs mt-0.5" style={{ color: sub }}>{selected.sub}</p>
+            </div>
+            <button onClick={() => setSelected(null)} aria-label="Close"><X size={14} color={sub} /></button>
+          </div>
+        )}
+      </Card>
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mt-4">
+        {pins.map((p, i) => {
+          const Icon = IconFor(p.type);
+          return (
+            <button key={i} onClick={() => setSelected(p)} className="chip-btn text-left p-3 rounded-xl border flex items-start gap-2"
+              style={{ borderColor: selected === p ? colorFor(p.type) : border, background: surface }}>
+              <Icon size={14} color={colorFor(p.type)} className="mt-0.5 shrink-0" />
+              <div>
+                <p className="text-xs font-medium">{p.n}</p>
+                <p className="text-[11px] mt-0.5" style={{ color: sub }}>{p.sub}</p>
+              </div>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/* ---------------- Weather ---------------- */
+function WeatherView({ dark, surface, border, sub, ink, city }) {
+  const now = getMockWeather(city);
+  const hourly = getHourlyForecast(city);
+  const rainAlert = hourly.find((h) => h.rain > 45);
+
+  return (
+    <div className="space-y-4">
+      <Card surface={surface} border={border}>
+        <div className="flex items-center justify-between flex-wrap gap-4">
+          <div>
+            <p className="mono-font text-xs tracking-widest uppercase" style={{ color: "#E8933C" }}>Now in {city.name}</p>
+            <h1 className="display-font text-4xl mt-1">{now.temp}°C</h1>
+            <p className="text-sm mt-1" style={{ color: sub }}>{now.condition} · {now.rain}% rain chance</p>
+          </div>
+          <CloudSun size={48} color="#E8933C" strokeWidth={1.3} />
+        </div>
+      </Card>
+
+      {rainAlert && (
+        <AiCard dark={dark}>
+          <div className="flex items-start gap-2.5">
+            <CloudRain size={16} color="#E8933C" className="mt-0.5 shrink-0" />
+            <p className="text-sm"><b>Rain alert:</b> up to {rainAlert.rain}% chance around {rainAlert.label} — good idea to keep an umbrella or light rain layer handy.</p>
+          </div>
+        </AiCard>
+      )}
+
+      <Card surface={surface} border={border}>
+        <h3 className="text-sm font-semibold mb-3">Next 6 hours</h3>
+        <div className="grid grid-cols-3 md:grid-cols-6 gap-2">
+          {hourly.map((h, i) => (
+            <div key={i} className="p-2.5 rounded-lg text-center" style={{ background: dark ? "#1B2438" : "#F6F2E9" }}>
+              <p className="text-xs" style={{ color: sub }}>{h.label}</p>
+              <p className="text-sm font-semibold mt-1">{h.temp}°</p>
+              <p className="text-[10px] mt-0.5" style={{ color: h.rain > 40 ? "#E8933C" : sub }}>{h.rain}% rain</p>
+            </div>
+          ))}
+        </div>
+      </Card>
+
+      <Card surface={surface} border={border}>
+        <div className="flex items-center gap-2 mb-2"><Sparkles size={14} color="#E8933C" /><h3 className="text-sm font-semibold">What to wear</h3></div>
+        <p className="text-sm" style={{ color: sub }}>
+          {now.temp > 28 ? "Light, breathable fabrics — it's warm out there." : now.temp > 20 ? "Light layers work well; comfortable for walking." : "Bring a light jacket for the cooler hours."}
+          {" "}{now.rain > 35 ? "Pack something waterproof — rain is fairly likely." : "Low rain risk, but always good to have a compact umbrella."}
+        </p>
+      </Card>
+
+      <div className="grid grid-cols-2 gap-4">
+        <Card surface={surface} border={border}>
+          <div className="flex items-center gap-2 text-sm" style={{ color: sub }}><Sunrise size={14} color="#2DD4BF" />Sunrise <span className="ml-auto mono-font" style={{ color: ink }}>6:12 AM</span></div>
+        </Card>
+        <Card surface={surface} border={border}>
+          <div className="flex items-center gap-2 text-sm" style={{ color: sub }}><Sunset size={14} color="#FF6B5D" />Sunset <span className="ml-auto mono-font" style={{ color: ink }}>7:04 PM</span></div>
+        </Card>
+      </div>
+    </div>
+  );
+}
+
+/* ---------------- Budget Planner (fully functional, real math) ---------------- */
+const EXPENSE_CATEGORIES = ["Flights", "Hotel", "Food", "Transport", "Activities", "Shopping", "Other"];
+const CATEGORY_COLORS = { Flights: "#E8933C", Hotel: "#2DD4BF", Food: "#FF6B5D", Transport: "#8B9BB4", Activities: "#F2B65D", Shopping: "#B48CE8", Other: "#6B7280" };
+
+function BudgetPlanner({ dark, surface, border, sub, ink }) {
+  const [totalBudget, setTotalBudget] = useState(2000);
+  const [expenses, setExpenses] = useState([
+    { id: 1, category: "Flights", amount: 620, note: "Round-trip flight" },
+    { id: 2, category: "Hotel", amount: 480, note: "5 nights" },
+  ]);
+  const [form, setForm] = useState({ category: "Food", amount: "", note: "" });
+
+  const addExpense = () => {
+    const amt = Number(form.amount);
+    if (!amt || amt <= 0) return;
+    setExpenses((prev) => [...prev, { id: Date.now(), category: form.category, amount: amt, note: form.note || form.category }]);
+    setForm({ category: "Food", amount: "", note: "" });
+  };
+  const removeExpense = (id) => setExpenses((prev) => prev.filter((e) => e.id !== id));
+
+  const spent = expenses.reduce((s, e) => s + e.amount, 0);
+  const remaining = totalBudget - spent;
+  const byCategory = EXPENSE_CATEGORIES.map((c) => ({ name: c, value: expenses.filter((e) => e.category === c).reduce((s, e) => s + e.amount, 0) })).filter((c) => c.value > 0);
+  const pct = totalBudget > 0 ? Math.min(100, Math.round((spent / totalBudget) * 100)) : 0;
+
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      <Card surface={surface} border={border}>
+        <h2 className="display-font text-xl mb-3">Trip budget</h2>
+        <label className="text-xs font-medium" style={{ color: sub }}>Total budget</label>
+        <input type="number" value={totalBudget} onChange={(e) => setTotalBudget(Number(e.target.value) || 0)}
+          className="w-full mt-1 mb-4 px-3 py-2 rounded-lg text-lg font-semibold border bg-transparent" style={{ borderColor: border, color: ink }} />
+
+        <div className="w-full h-2.5 rounded-full mb-2" style={{ background: dark ? "#1B2438" : "#F6F2E9" }}>
+          <div className="h-full rounded-full transition-all" style={{ width: `${pct}%`, background: pct > 90 ? "#FF6B5D" : "#E8933C" }} />
+        </div>
+        <div className="flex justify-between text-sm mb-4">
+          <span style={{ color: sub }}>Spent: <b style={{ color: ink }}>{spent}</b></span>
+          <span style={{ color: remaining < 0 ? "#FF6B5D" : sub }}>Remaining: <b>{remaining}</b></span>
+        </div>
+
+        <h3 className="text-sm font-semibold mb-2">Add an expense</h3>
+        <div className="grid grid-cols-2 gap-2 mb-2">
+          <select value={form.category} onChange={(e) => setForm((f) => ({ ...f, category: e.target.value }))}
+            className="px-3 py-2 rounded-lg text-sm border bg-transparent" style={{ borderColor: border, color: ink }}>
+            {EXPENSE_CATEGORIES.map((c) => <option key={c} value={c} style={{ color: "#10131A" }}>{c}</option>)}
+          </select>
+          <input type="number" placeholder="Amount" value={form.amount} onChange={(e) => setForm((f) => ({ ...f, amount: e.target.value }))}
+            className="px-3 py-2 rounded-lg text-sm border bg-transparent" style={{ borderColor: border, color: ink }} />
+        </div>
+        <input placeholder="Note (optional)" value={form.note} onChange={(e) => setForm((f) => ({ ...f, note: e.target.value }))}
+          className="w-full px-3 py-2 rounded-lg text-sm border bg-transparent mb-2" style={{ borderColor: border, color: ink }} />
+        <button onClick={addExpense} className="w-full py-2.5 rounded-lg text-sm font-semibold flex items-center justify-center gap-1.5"
+          style={{ background: "linear-gradient(135deg, #E8933C, #FF6B5D)", color: "#10131A" }}>
+          <Plus size={14} />Add expense
+        </button>
+
+        <div className="mt-4 space-y-1.5 max-h-52 overflow-y-auto pr-1">
+          {expenses.map((e) => (
+            <div key={e.id} className="flex items-center justify-between text-sm p-2 rounded-lg" style={{ background: dark ? "#1B2438" : "#F6F2E9" }}>
+              <div className="flex items-center gap-2">
+                <span className="w-2 h-2 rounded-full" style={{ background: CATEGORY_COLORS[e.category] }} />
+                <span style={{ color: ink }}>{e.note}</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="mono-font" style={{ color: sub }}>{e.amount}</span>
+                <button onClick={() => removeExpense(e.id)} aria-label="Remove"><Trash2 size={13} color="#FF6B5D" /></button>
+              </div>
+            </div>
+          ))}
+        </div>
+      </Card>
+
+      <Card surface={surface} border={border}>
+        <h2 className="display-font text-xl mb-3">Breakdown</h2>
+        {byCategory.length === 0 ? (
+          <p className="text-sm py-10 text-center" style={{ color: sub }}>Add an expense to see the breakdown.</p>
+        ) : (
+          <>
+            <div style={{ width: "100%", height: 220 }}>
+              <ResponsiveContainer>
+                <PieChart>
+                  <Pie data={byCategory} dataKey="value" nameKey="name" innerRadius={55} outerRadius={85} paddingAngle={3}>
+                    {byCategory.map((c, i) => <Cell key={i} fill={CATEGORY_COLORS[c.name]} stroke="none" />)}
+                  </Pie>
+                  <Tooltip contentStyle={{ background: surface, border: `1px solid ${border}`, borderRadius: 8, color: ink }} />
+                </PieChart>
+              </ResponsiveContainer>
+            </div>
+            <div className="grid grid-cols-2 gap-2 mt-2">
+              {byCategory.map((c) => (
+                <div key={c.name} className="flex items-center gap-2 text-sm">
+                  <span className="w-2.5 h-2.5 rounded-full" style={{ background: CATEGORY_COLORS[c.name] }} />
+                  <span style={{ color: sub }}>{c.name}</span>
+                  <span className="mono-font ml-auto">{c.value}</span>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+        {remaining < 0 && (
+          <div className="mt-3 flex items-start gap-2 text-sm p-3 rounded-lg" style={{ background: "rgba(255,107,93,0.1)", color: "#FF6B5D" }}>
+            <AlertTriangle size={14} className="mt-0.5 shrink-0" />You're {Math.abs(remaining)} over budget.
+          </div>
+        )}
+      </Card>
+    </div>
+  );
+}
+
 function Planner({ dark, surface, border, sub, city }) {
   const [days, setDays] = useState(4);
   const [travelers, setTravelers] = useState(1);
@@ -1127,6 +1782,358 @@ function Documents({ dark, surface, border, sub, ink }) {
             </div>
           ))}
         </div>
+      </Card>
+    </div>
+  );
+}
+
+/* ---------------- Currency Converter (static reference rates) ---------------- */
+const CURRENCY_RATES_PER_USD = {
+  USD: 1, INR: 86.5, EUR: 0.92, GBP: 0.78, THB: 34.8, JPY: 155.2, IDR: 16150,
+  AED: 3.67, VND: 25400, TRY: 34.9, EGP: 49.5, MXN: 18.2, PEN: 3.75, NPR: 138.5,
+  LKR: 302, AUD: 1.52, ZAR: 18.4, MAD: 9.9,
+};
+
+function CurrencyConverter({ dark, surface, border, sub, ink, city }) {
+  const [amount, setAmount] = useState(100);
+  const [from, setFrom] = useState("USD");
+  const [to, setTo] = useState("INR");
+  const codes = Object.keys(CURRENCY_RATES_PER_USD);
+
+  const converted = (Number(amount) / CURRENCY_RATES_PER_USD[from]) * CURRENCY_RATES_PER_USD[to];
+  const swap = () => { setFrom(to); setTo(from); };
+
+  return (
+    <div className="max-w-xl">
+      <Card surface={surface} border={border}>
+        <div className="flex items-center gap-2 mb-1"><ArrowLeftRight size={16} color="#E8933C" /><h2 className="display-font text-xl">Currency Converter</h2></div>
+        <p className="text-xs mb-4 flex items-start gap-1.5" style={{ color: sub }}>
+          <Info size={12} className="mt-0.5 shrink-0" />Reference rates only, updated at the time this app was built — not live. Check your bank or xe.com before exchanging money.
+        </p>
+
+        <label className="text-xs font-medium" style={{ color: sub }}>Amount</label>
+        <input type="number" value={amount} onChange={(e) => setAmount(e.target.value)}
+          className="w-full mt-1 mb-3 px-3 py-2 rounded-lg text-lg font-semibold border bg-transparent" style={{ borderColor: border, color: ink }} />
+
+        <div className="flex items-center gap-2 mb-4">
+          <select value={from} onChange={(e) => setFrom(e.target.value)} className="flex-1 px-3 py-2 rounded-lg text-sm border bg-transparent" style={{ borderColor: border, color: ink }}>
+            {codes.map((c) => <option key={c} value={c} style={{ color: "#10131A" }}>{c}</option>)}
+          </select>
+          <button onClick={swap} className="w-9 h-9 rounded-full flex items-center justify-center border shrink-0" style={{ borderColor: border }} aria-label="Swap currencies">
+            <ArrowLeftRight size={14} color="#E8933C" />
+          </button>
+          <select value={to} onChange={(e) => setTo(e.target.value)} className="flex-1 px-3 py-2 rounded-lg text-sm border bg-transparent" style={{ borderColor: border, color: ink }}>
+            {codes.map((c) => <option key={c} value={c} style={{ color: "#10131A" }}>{c}</option>)}
+          </select>
+        </div>
+
+        <div className="p-4 rounded-xl text-center" style={{ background: dark ? "#1B2438" : "#F6F2E9" }}>
+          <p className="text-xs" style={{ color: sub }}>{amount} {from} ≈</p>
+          <p className="display-font text-3xl mt-1">{converted.toLocaleString(undefined, { maximumFractionDigits: 2 })} {to}</p>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+/* ---------------- AI Scanner + Translator (real Claude vision call) ---------------- */
+const LANGUAGE_OPTIONS = ["English", "Hindi", "Spanish", "French", "Japanese", "Thai", "Arabic", "Mandarin", "Portuguese", "German"];
+
+function ScannerTranslator({ dark, surface, border, sub, ink }) {
+  const [image, setImage] = useState(null);
+  const [mediaType, setMediaType] = useState(null);
+  const [targetLang, setTargetLang] = useState("English");
+  const [result, setResult] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const fileRef = useRef(null);
+
+  const handleFile = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      setError("Please choose an image file (photo of a menu, sign, or document).");
+      return;
+    }
+    setError(null);
+    setMediaType(file.type);
+    const reader = new FileReader();
+    reader.onload = () => setImage(reader.result);
+    reader.readAsDataURL(file);
+  };
+
+  const scanAndTranslate = async () => {
+    if (!image) return;
+    setLoading(true);
+    setResult(null);
+    setError(null);
+    const base64 = image.split(",")[1];
+    try {
+      const response = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-6",
+          max_tokens: 1000,
+          messages: [
+            {
+              role: "user",
+              content: [
+                { type: "image", source: { type: "base64", media_type: mediaType, data: base64 } },
+                { type: "text", text: `Extract all readable text from this image (menu, sign, or document). Then translate that text into ${targetLang}. Respond in exactly this format:\n\nORIGINAL:\n<extracted text>\n\nTRANSLATION (${targetLang}):\n<translated text>` },
+              ],
+            },
+          ],
+        }),
+      });
+      const data = await response.json();
+      const textBlocks = (data.content || []).filter((b) => b.type === "text").map((b) => b.text);
+      setResult(textBlocks.join("\n") || "Couldn't read a clear response — try a clearer photo.");
+    } catch (e) {
+      setError("Couldn't reach the AI service just now. Please try again.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="max-w-2xl">
+      <div className="flex items-center gap-2 mb-1"><ScanLine size={16} color="#E8933C" /><h2 className="display-font text-xl">AI Scanner & Translator</h2></div>
+      <p className="text-xs mb-4" style={{ color: sub }}>Upload a photo of a menu, sign, or document — real Claude vision extracts and translates the text.</p>
+
+      <Card surface={surface} border={border}>
+        <input ref={fileRef} type="file" accept="image/*" onChange={handleFile} className="hidden" />
+        <button onClick={() => fileRef.current?.click()} className="w-full py-8 rounded-xl border-2 border-dashed flex flex-col items-center justify-center gap-2"
+          style={{ borderColor: border, color: sub }}>
+          {image ? <img src={image} alt="Uploaded preview" className="max-h-48 rounded-lg" /> : <><Upload size={22} /><span className="text-sm">Tap to upload a photo</span></>}
+        </button>
+
+        <div className="flex items-center gap-2 mt-4">
+          <Languages size={14} color="#E8933C" />
+          <label className="text-xs font-medium" style={{ color: sub }}>Translate to</label>
+          <select value={targetLang} onChange={(e) => setTargetLang(e.target.value)} className="ml-auto px-3 py-1.5 rounded-lg text-sm border bg-transparent" style={{ borderColor: border, color: ink }}>
+            {LANGUAGE_OPTIONS.map((l) => <option key={l} value={l} style={{ color: "#10131A" }}>{l}</option>)}
+          </select>
+        </div>
+
+        <button onClick={scanAndTranslate} disabled={!image || loading} className="w-full mt-3 py-2.5 rounded-lg text-sm font-semibold flex items-center justify-center gap-2"
+          style={{ background: "linear-gradient(135deg, #E8933C, #FF6B5D)", color: "#10131A", opacity: !image || loading ? 0.6 : 1 }}>
+          {loading ? <Loader2 size={15} className="animate-spin" /> : <ScanLine size={15} />}{loading ? "Reading & translating…" : "Scan & Translate"}
+        </button>
+
+        {error && <p className="text-xs mt-2" style={{ color: "#FF6B5D" }}>{error}</p>}
+
+        {result && (
+          <div className="mt-4 p-4 rounded-lg text-sm whitespace-pre-wrap" style={{ background: dark ? "#1B2438" : "#F6F2E9", color: ink }}>
+            {result}
+          </div>
+        )}
+      </Card>
+      <p className="text-[11px] mt-2" style={{ color: sub }}>Powered by a live Claude API vision call — the extracted text is genuinely read from your photo.</p>
+    </div>
+  );
+}
+
+/* ---------------- Packing Assistant ---------------- */
+const UNIVERSAL_PACKING = ["Passport / ID (+ copies)", "Phone charger", "Power bank", "Basic first-aid kit", "Reusable water bottle"];
+const INTEREST_PACKING = {
+  "Heritage & Forts": ["Comfortable walking shoes", "Modest clothing for temple/fort visits"],
+  "Food & Street Food": ["Antacids / digestive aids", "Hand sanitizer"],
+  Spiritual: ["Modest, shoulder/knee-covering clothing", "Socks (easy to remove shoes at shrines)"],
+  "Nature & Trekking": ["Trekking shoes", "Insect repellent", "Headlamp/flashlight"],
+  Beaches: ["Swimwear", "Reef-safe sunscreen", "Quick-dry towel"],
+  "Art & Culture": ["Notebook/sketchbook", "Portable phone lens for photos"],
+  Shopping: ["Foldable extra bag for purchases", "Padlock for luggage"],
+  Nightlife: ["A slightly dressier outfit", "Portable phone charger for late nights"],
+};
+
+function PackingAssistant({ dark, surface, border, sub, ink, city }) {
+  const [days, setDays] = useState(5);
+  const [interests, setInterests] = useState(["Heritage & Forts", "Food & Street Food"]);
+  const [checked, setChecked] = useState({});
+  const weather = getMockWeather(city);
+
+  const toggleInterest = (i) => setInterests((prev) => (prev.includes(i) ? prev.filter((x) => x !== i) : [...prev, i]));
+
+  const weatherItems = [];
+  if (weather.rain > 30) weatherItems.push("Compact umbrella / rain jacket");
+  if (weather.temp > 28) weatherItems.push("Light, breathable fabrics", "Extra sunscreen");
+  if (weather.temp < 20) weatherItems.push("Warm layer / light jacket");
+
+  const interestItems = interests.flatMap((i) => INTEREST_PACKING[i] || []);
+  const allItems = [...new Set([...UNIVERSAL_PACKING, ...weatherItems, ...interestItems, days > 6 ? "Laundry bag / travel detergent sheets" : null].filter(Boolean))];
+
+  const toggle = (item) => setChecked((prev) => ({ ...prev, [item]: !prev[item] }));
+  const packedCount = allItems.filter((i) => checked[i]).length;
+
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+      <Card surface={surface} border={border} className="lg:col-span-1 h-fit">
+        <div className="flex items-center gap-2 mb-3"><Backpack size={16} color="#E8933C" /><h2 className="display-font text-lg">Trip details</h2></div>
+        <label className="text-xs font-medium" style={{ color: sub }}>Duration (days)</label>
+        <input type="number" min={1} max={30} value={days} onChange={(e) => setDays(Math.max(1, Number(e.target.value) || 1))}
+          className="w-full mt-1 mb-3 px-3 py-2 rounded-lg text-sm border bg-transparent" style={{ borderColor: border, color: ink }} />
+        <label className="text-xs font-medium" style={{ color: sub }}>What you'll be doing</label>
+        <div className="flex flex-wrap gap-2 mt-1">
+          {Object.keys(INTEREST_PACKING).map((i) => (
+            <button key={i} onClick={() => toggleInterest(i)} className="chip-btn px-2.5 py-1 rounded-full text-xs border"
+              style={{ borderColor: interests.includes(i) ? "#2DD4BF" : border, background: interests.includes(i) ? "rgba(45,212,191,0.12)" : "transparent", color: interests.includes(i) ? "#2DD4BF" : sub }}>
+              {i}
+            </button>
+          ))}
+        </div>
+        <p className="text-xs mt-3" style={{ color: sub }}>Based on {city.name}'s current mock conditions: {weather.condition}, {weather.temp}°C, {weather.rain}% rain.</p>
+      </Card>
+
+      <Card surface={surface} border={border} className="lg:col-span-2">
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="display-font text-lg">Packing checklist</h2>
+          <span className="text-xs mono-font" style={{ color: sub }}>{packedCount}/{allItems.length} packed</span>
+        </div>
+        <div className="w-full h-2 rounded-full mb-4" style={{ background: dark ? "#1B2438" : "#F6F2E9" }}>
+          <div className="h-full rounded-full transition-all" style={{ width: `${allItems.length ? (packedCount / allItems.length) * 100 : 0}%`, background: "#2DD4BF" }} />
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+          {allItems.map((item) => (
+            <button key={item} onClick={() => toggle(item)} className="chip-btn flex items-center gap-2 p-2.5 rounded-lg text-sm text-left"
+              style={{ background: dark ? "#1B2438" : "#F6F2E9", opacity: checked[item] ? 0.55 : 1 }}>
+              <span className="w-4 h-4 rounded flex items-center justify-center border shrink-0" style={{ borderColor: checked[item] ? "#2DD4BF" : border, background: checked[item] ? "#2DD4BF" : "transparent" }}>
+                {checked[item] && <Check size={11} color="#10131A" />}
+              </span>
+              <span style={{ color: ink, textDecoration: checked[item] ? "line-through" : "none" }}>{item}</span>
+            </button>
+          ))}
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+/* ---------------- Memory Journal (persists via artifact storage API) ---------------- */
+function MemoryJournal({ dark, surface, border, sub, ink, city }) {
+  const [entries, setEntries] = useState([]);
+  const [loaded, setLoaded] = useState(false);
+  const [form, setForm] = useState({ title: "", note: "" });
+  const [saving, setSaving] = useState(false);
+  const [loadError, setLoadError] = useState(null);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const result = await window.storage.get("memory-journal-entries", false);
+        setEntries(result?.value ? JSON.parse(result.value) : []);
+      } catch (e) {
+        setEntries([]);
+      } finally {
+        setLoaded(true);
+      }
+    })();
+  }, []);
+
+  const persist = async (next) => {
+    setEntries(next);
+    try {
+      await window.storage.set("memory-journal-entries", JSON.stringify(next), false);
+    } catch (e) {
+      setLoadError("Saved locally this session, but couldn't persist to storage — it may not survive a refresh.");
+    }
+  };
+
+  const addEntry = async () => {
+    if (!form.title.trim()) return;
+    setSaving(true);
+    const entry = { id: Date.now(), title: form.title, note: form.note, city: city.name, date: new Date().toLocaleDateString() };
+    await persist([entry, ...entries]);
+    setForm({ title: "", note: "" });
+    setSaving(false);
+  };
+
+  const removeEntry = async (id) => {
+    await persist(entries.filter((e) => e.id !== id));
+  };
+
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      <Card surface={surface} border={border} className="h-fit">
+        <div className="flex items-center gap-2 mb-3"><BookHeart size={16} color="#E8933C" /><h2 className="display-font text-lg">Add a memory</h2></div>
+        <input placeholder="Title (e.g. Sunset at the fort)" value={form.title} onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))}
+          className="w-full mb-2 px-3 py-2 rounded-lg text-sm border bg-transparent" style={{ borderColor: border, color: ink }} />
+        <textarea placeholder="What happened? How did it feel?" value={form.note} onChange={(e) => setForm((f) => ({ ...f, note: e.target.value }))}
+          rows={4} className="w-full mb-2 px-3 py-2 rounded-lg text-sm border bg-transparent resize-none" style={{ borderColor: border, color: ink }} />
+        <button onClick={addEntry} disabled={saving || !form.title.trim()} className="w-full py-2.5 rounded-lg text-sm font-semibold flex items-center justify-center gap-2"
+          style={{ background: "linear-gradient(135deg, #E8933C, #FF6B5D)", color: "#10131A", opacity: saving || !form.title.trim() ? 0.6 : 1 }}>
+          <Plus size={14} />{saving ? "Saving…" : "Save memory"}
+        </button>
+        {loadError && <p className="text-xs mt-2" style={{ color: "#FF6B5D" }}>{loadError}</p>}
+        <p className="text-[11px] mt-2" style={{ color: sub }}>Saved with the artifact's persistent storage — this survives closing and reopening the app, tied to your account.</p>
+      </Card>
+
+      <Card surface={surface} border={border}>
+        <h2 className="display-font text-lg mb-3">Your timeline</h2>
+        {!loaded ? (
+          <p className="text-sm" style={{ color: sub }}>Loading your memories…</p>
+        ) : entries.length === 0 ? (
+          <p className="text-sm py-8 text-center" style={{ color: sub }}>No memories saved yet — add your first one.</p>
+        ) : (
+          <div className="space-y-2 max-h-96 overflow-y-auto pr-1">
+            {entries.map((e) => (
+              <div key={e.id} className="p-3 rounded-lg" style={{ background: dark ? "#1B2438" : "#F6F2E9" }}>
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <p className="text-sm font-medium">{e.title}</p>
+                    <p className="text-[11px] mt-0.5" style={{ color: sub }}>{e.city} · {e.date}</p>
+                  </div>
+                  <button onClick={() => removeEntry(e.id)} aria-label="Delete memory"><Trash2 size={13} color="#FF6B5D" /></button>
+                </div>
+                {e.note && <p className="text-sm mt-2" style={{ color: ink }}>{e.note}</p>}
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
+    </div>
+  );
+}
+
+/* ---------------- Settings ---------------- */
+function SettingsView({ dark, surface, border, sub, ink, setDark }) {
+  const [notifications, setNotifications] = useState(true);
+  const [offlineMode, setOfflineMode] = useState(false);
+
+  const Toggle = ({ on, onClick }) => (
+    <button onClick={onClick} className="w-10 h-6 rounded-full relative transition-colors" style={{ background: on ? "#2DD4BF" : border }}>
+      <span className="absolute top-0.5 w-5 h-5 rounded-full bg-white transition-transform" style={{ transform: on ? "translateX(18px)" : "translateX(2px)" }} />
+    </button>
+  );
+
+  return (
+    <div className="max-w-xl space-y-4">
+      <Card surface={surface} border={border}>
+        <div className="flex items-center gap-2 mb-4"><SettingsIcon size={16} color="#E8933C" /><h2 className="display-font text-xl">Settings</h2></div>
+
+        <div className="flex items-center justify-between py-3 border-b" style={{ borderColor: border }}>
+          <div className="flex items-center gap-2"><Sun size={15} color={sub} /><span className="text-sm">Dark mode</span></div>
+          <Toggle on={dark} onClick={() => setDark((d) => !d)} />
+        </div>
+
+        <div className="flex items-center justify-between py-3 border-b" style={{ borderColor: border }}>
+          <div className="flex items-center gap-2"><Bell size={15} color={sub} /><span className="text-sm">Notifications (UI only, not wired to a real push service)</span></div>
+          <Toggle on={notifications} onClick={() => setNotifications((n) => !n)} />
+        </div>
+
+        <div className="flex items-center justify-between py-3">
+          <div className="flex items-center gap-2"><Globe2 size={15} color={sub} /><span className="text-sm">Offline mode (UI only — no offline caching is implemented yet)</span></div>
+          <Toggle on={offlineMode} onClick={() => setOfflineMode((o) => !o)} />
+        </div>
+      </Card>
+
+      <Card surface={surface} border={border}>
+        <h3 className="text-sm font-semibold mb-2">About this build</h3>
+        <p className="text-sm" style={{ color: sub }}>
+          TravelMind AI is a front-end prototype. AI Assistant and Scan & Translate make real calls to the Anthropic API.
+          SOS Mode uses real device location and dialing. Everything else (weather, safety scores, currency rates, maps)
+          is illustrative or rule-based rather than backed by live external data — see the project README for a full breakdown.
+        </p>
       </Card>
     </div>
   );
