@@ -284,7 +284,7 @@ The current version focuses on creating a polished frontend foundation while pre
 
 # 👩‍💻 Developer
 
-## Mahi V
+## Mahi Varshney
 
 **B.Tech Computer Science (AI)**
 
